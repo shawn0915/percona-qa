@@ -34,27 +34,47 @@ STRING="$(echo "$( \
   head -n1 | sed 's|^[ \t]\+||;s|[ \t]\+$||;' \
 )"
 
+poor_strings_check(){
+  if [ "${TEST_STRING}" == "" ]; then POOR_STRING=1; fi
+  if [ "${TEST_STRING}" == "my_print_stacktrace" ]; then POOR_STRING=1; fi
+  if [ "${TEST_STRING}" == "my_print_stacktrace.unsigned" ]; then POOR_STRING=1; fi
+  if [ "${TEST_STRING}" == "0" ]; then POOR_STRING=1; fi
+  if [ "${TEST_STRING}" == "NULL" ]; then POOR_STRING=1; fi
+  if [ "${TEST_STRING}" == "start" ]; then POOR_STRING=1; fi
+  if [ "${TEST_STRING}" == "ut_dbg_assertion_failed" ]; then POOR_STRING=1; fi
+}
+
 check_better_string(){
-  BETTER_FOUND=0
-  if [ "${POTENTIALLY_BETTER_STRING}" != "" -a "${POTENTIALLY_BETTER_STRING}" != "my_print_stacktrace" -a "${POTENTIALLY_BETTER_STRING}" != "0" -a "${POTENTIALLY_BETTER_STRING}" != "NULL" ]; then
+  POOR_STRING=0
+  TEST_STRING=${POTENTIALLY_BETTER_STRING}
+  poor_strings_check
+  if [ ${POOR_STRING} -eq 0 ]; then
     STRING=${POTENTIALLY_BETTER_STRING}
-    BETTER_FOUND=1
   fi
 }
 
+# Find a better string if needed
 # This block can be added unto with 'ever deeper nesting if's' - i.e. as long as the output is poor (for the cases covered), more can
 # be done to try and get a better quality string. Adding other "poor outputs" is also possible, though not 100% (as someone may have
 # already added that particular poor output to known_bugs.strings - always check that file first, especially the TEXT=... strings
 # towards the end of that file).
-if [ "${STRING}" == "" -o "${STRING}" == "my_print_stacktrace" -o "${STRING}" == "my_print_stacktrace.unsigned" -o "${STRING}" == "0" -o "${STRING}" == "NULL" -o "${STRING}" == "start" ]; then
+POOR_STRING=0
+TEST_STRING=${STRING}
+poor_strings_check
+if [ ${POOR_STRING} -eq 1 ]; then
   POTENTIALLY_BETTER_STRING="$(grep 'Assertion failure:' $ERROR_LOG | tail -n1 | sed 's|.*Assertion failure:[ \t]\+||;s|[ \t]+$||;s|.*c:[0-9]\+:||;s/|/./g;s/\&/./g;s/:/./g;s|"|.|g;s|\!|.|g;s|&|.|g;s|\*|.|g;s|\]|.|g;s|\[|.|g;s|)|.|g;s|(|.|g')"
   check_better_string
-  if [ ${BETTER_FOUND} -eq 0 ]; then
+  if [ ${POOR_STRING} -eq 1 ]; then
     # Last resort; try to get first frame from stack trace in error log in a more basic way
     # This may need some further work, if we start seeing too generic strings like 'do_command', 'parse_sql' etc. text showing in bug list
     POTENTIALLY_BETTER_STRING="$(egrep -o 'libgalera_smm\.so\(.*|mysqld\(.*|ha_rocksdb.so\(.*|ha_tokudb.so\(.*' $ERROR_LOG | sed 's|[^(]\+(||;s|).*||;s|(.*||;s|+0x.*||' | egrep -v 'my_print_stacktrace|handle.*signal|^[ \t]*$' | sed 's/|/./g;s/\&/./g;s/:/./g;s|"|.|g;s|\!|.|g;s|&|.|g;s|\*|.|g;s|\]|.|g;s|\[|.|g;s|)|.|g;s|(|.|g' | head -n1)"
     check_better_string
-    # More can be added here, always preceded by: if [ ${BETTER_FOUND} -eq 0 ]; then
+    if [ ${POOR_STRING} -eq 1 ]; then
+      # 8.0 runs have somewhat different looking assertions, more may need to be added here
+      POTENTIALLY_BETTER_STRING="$(grep 'Assertion failure:' $ERROR_LOG | tail -n1 | sed 's|.*Assertion failure:[ \t]\+||;s|[ \t]+$||;s/|/./g;s/\&/./g;s/:/./g;s|"|.|g;s|\!|.|g;s|&|.|g;s|\*|.|g;s|\]|.|g;s|\[|.|g;s|)|.|g;s|(|.|g')"
+      check_better_string
+      # More can be added here, always preceded by:  if [ ${POOR_STRING} -eq 1 ]; then
+    fi
   fi
 fi
 
@@ -84,5 +104,25 @@ if [ "${STRING}" == ".error" ]; then
     STRING="dict0dd.cc:5.....error"
   fi
 fi
+
+# Fixup an important ("dd_table_discard_tablespace") text string (ref examples above for more information on how this is done)
+if [ "${STRING}" == "dd_table_discard_tablespace" ]; then
+  if grep "Cannot find a free slot for an undo log" $ERROR_LOG 2>/dev/null 1>&2; then  # Always check that it is a specific issue
+    if grep "InnoDB: Assertion failure: dict0dd.cc:" $ERROR_LOG 2>/dev/null 1>&2; then  # Always check that it is a specific issue
+      STRING="RSEG.....dd_table_discard_tablespace"
+    fi
+  fi
+fi
+
+# Fixup an important (""strcmp.table->name.m_name, table_name. == 0) text string (ref examples above for more information on how this is done)
+if [ "${STRING}" == "strcmp.table->name.m_name, table_name. == 0" ]; then
+  if grep "Cannot find a free slot for an undo log" $ERROR_LOG 2>/dev/null 1>&2; then  # Always check that it is a specific issue
+    if grep "InnoDB: Assertion failure: dict0dd.cc:" $ERROR_LOG 2>/dev/null 1>&2; then  # Always check that it is a specific issue
+      STRING="RSEG.....strcmp.table->name.m_name, table_name. == 0"
+    fi
+  fi
+fi
+
+STRING=$(echo "${STRING}" | sed "s|/sda/MS[0-9]\+[^ ]\+/bin/mysqld||g")  # Filter out accidental path name insertions
 
 echo ${STRING}

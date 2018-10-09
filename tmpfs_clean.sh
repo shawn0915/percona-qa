@@ -13,9 +13,9 @@ COUNT_FOUND_AND_DEL=0
 COUNT_FOUND_AND_NOT_DEL=0
 if [ $(ls -ld /dev/shm/* | wc -l) -eq 0 ]; then
   echo "> No /dev/shm/* directories found at all, it looks like tmpfs is empty. All good."
-  exit 0
 else
   for DIR in $(ls -ld /dev/shm/* | sed 's|^.*/dev/shm|/dev/shm|'); do
+    STORE_COUNT_FOUND_AND_DEL=${COUNT_FOUND_AND_DEL}
     if [ -d ${DIR} ]; then  # Ensure it's a directory (avoids deleting pquery-reach.log for example)
       if [ $(ps -ef | grep -v grep | grep "${DIR}" | wc -l) -eq 0 ]; then
         sync; sleep 0.3  # Small wait, then recheck (to avoid missed ps output)
@@ -33,7 +33,7 @@ else
                 fi
               else
                 DIRNAME=$(echo ${DIR} | sed 's|.*/||')
-                if [ "$(echo ${DIRNAME} | sed 's|[0-9][0-9][0-9][0-9][0-9][0-9]||')" == "" ]; then  # 6 Numbers subdir; this is likely a pquery-run.sh or pquery-reach.sh generated directory
+                if [ "$(echo ${DIRNAME} | sed 's|[0-9][0-9][0-9][0-9][0-9][0-9]||' | sed 's|[0-9][0-9][0-9][0-9][0-9][0-9][0-9]||')" == "" ]; then  # 6 or 7 Numbers subdir; this is likely a pquery-run.sh (6) or pquery-reach.sh (7) generated directory
                   SUBDIRCOUNT=$(ls -d ${DIR} 2>/dev/null | wc -l)  # Number of trial subdirectories
                   if [ ${SUBDIRCOUNT} -le 1 ]; then  # pquery-run.sh directories generally have 1 (or 0 when in between trials) subdirectories. Both 0 and 1 need to be covered
                     if [ $(ls ${DIR}/*pquery*reach* 2>/dev/null | wc -l) -gt 0 ]; then # A pquery-reach.sh directory
@@ -75,9 +75,10 @@ else
           fi
         fi
       fi
-    else
-      COUNT_FOUND_AND_NOT_DEL=$[ ${COUNT_FOUND_AND_NOT_DEL} + 1 ]
     fi
+    if [ ${STORE_COUNT_FOUND_AND_DEL} -eq ${COUNT_FOUND_AND_DEL} ]; then  # A directory was found but not deleted
+      COUNT_FOUND_AND_NOT_DEL=$[ ${COUNT_FOUND_AND_NOT_DEL} + 1 ]  
+    fi; STORE_COUNT_FOUND_AND_DEL=
   done
   if [ ${COUNT_FOUND_AND_NOT_DEL} -ge 1 -a ${COUNT_FOUND_AND_DEL} -eq 0 ]; then
     echo "> Though $(ls -ld /dev/shm/* | wc -l) tmpfs directories were found on /dev/shm, they are all in use. Nothing was deleted."

@@ -1787,10 +1787,10 @@ generate_run_scripts(){
   fi
   echo "SCRIPT_DIR=\$(cd \$(dirname \$0) && pwd)" > $WORK_GDB
   echo "source \$SCRIPT_DIR/${EPOCH}_mybase" >> $WORK_GDB
-  echo "gdb \${BASEDIR}/bin/mysqld \$(ls /dev/shm/${EPOCH}/data/core.*)" >> $WORK_GDB
+  echo "gdb \${BASEDIR}/bin/mysqld \$(ls /dev/shm/${EPOCH}/data/core*)" >> $WORK_GDB
   echo "SCRIPT_DIR=\$(cd \$(dirname \$0) && pwd)" > $WORK_PARSE_CORE
   echo "source \$SCRIPT_DIR/${EPOCH}_mybase" >> $WORK_PARSE_CORE
-  echo "gdb \${BASEDIR}/bin/mysqld \$(ls /dev/shm/${EPOCH}/data/core.*) >/dev/null 2>&1 <<EOF" >> $WORK_PARSE_CORE
+  echo "gdb \${BASEDIR}/bin/mysqld \$(ls /dev/shm/${EPOCH}/data/core*) >/dev/null 2>&1 <<EOF" >> $WORK_PARSE_CORE
   echo -e "  set auto-load safe-path /\n  set libthread-db-search-path /usr/lib/\n  set trace-commands on\n  set pagination off\n  set print pretty on\n  set print array on\n  set print array-indexes on\n  set print elements 4096\n  set logging file ${EPOCH}_FULL.gdb\n  set logging on\n  thread apply all bt full\n  set logging off\n  set logging file ${EPOCH}_STD.gdb\n  set logging on\n  thread apply all bt\n  set logging off\n  quit\nEOF" >> $WORK_PARSE_CORE
   echo "SCRIPT_DIR=\$(cd \$(dirname \$0) && pwd)" > $WORK_STOP
   echo "source \$SCRIPT_DIR/${EPOCH}_mybase" >> $WORK_STOP
@@ -1809,7 +1809,7 @@ generate_run_scripts(){
   else
     echo "$ ./${EPOCH}_start           # STEP3: Starts mysqld" >> $WORK_HOW_TO_USE
   fi
-  echo "$ ./${EPOCH}_cl              # STEP4: To check mysqld is up" >> $WORK_HOW_TO_USE
+  echo "$ ./${EPOCH}_cl              # STEP4: To check mysqld is up (repeat if necessary)" >> $WORK_HOW_TO_USE
   if [ $PQUERY_MOD -eq 1 ]; then
     echo "$ ./${EPOCH}_run_pquery      # STEP5: Run the testcase with the pquery binary" >> $WORK_HOW_TO_USE
     echo "$ ./${EPOCH}_run             # OPTIONAL: Run the testcase with the mysql CLI (may not reproduce the issue, as the pquery binary was used for the original testcase reduction)" >> $WORK_HOW_TO_USE
@@ -3868,189 +3868,191 @@ if [ $SKIPSTAGEBELOW -lt 6 -a $SKIPSTAGEABOVE -gt 6 ]; then
   # ) ENGINE=abc;
 
   COUNTTABLES=$(grep -E --binary-files=text "CREATE[\t ]*TABLE" $WORKF | wc -l)
-  for t in $(eval echo {$COUNTTABLES..1}); do  # Reverse order process all tables
-    # the '...\n/2' sed is a precaution against multiple CREATE TABLEs on one line (it replaces the second occurence)
-    TABLENAME=$(grep -E --binary-files=text -m$t "CREATE[\t ]*TABLE" $WORKF | tail -n1 | sed -e 's/CREATE[\t ]*TABLE/\n/2' \
-      | head -n1 | sed -e 's/CREATE[\t ]*TABLE[\t ]*\(.*\)[\t ]*(/\1/' -e 's/ .*//1' -e 's/(.*//1')
+  if [ ${COUNTTABLES} -ge 1 ]; then
+    for t in $(eval echo {$COUNTTABLES..1}); do  # Reverse order process all tables
+      # the '...\n/2' sed is a precaution against multiple CREATE TABLEs on one line (it replaces the second occurence)
+      TABLENAME=$(grep -E --binary-files=text -m$t "CREATE[\t ]*TABLE" $WORKF | tail -n1 | sed -e 's/CREATE[\t ]*TABLE/\n/2' \
+        | head -n1 | sed -e 's/CREATE[\t ]*TABLE[\t ]*\(.*\)[\t ]*(/\1/' -e 's/ .*//1' -e 's/(.*//1')
 
-    # Check if this table ($TABLENAME) is references in aother INSERT..INTO..$TABLENAME2..SELECT..$TABLENAME line.
-    # If so, reducer does not need to process this table since it will be processed later when reducer gets to the table $TABLENAME2
-    # This is basically an optimization to avoid x (number of colums) unnecessary restarts which will definitely fail:
-    # Example: CREATE TABLE t1 (id INT); INSERT INTO t1 VALUES (1); CREATE TABLE t2 (id2 INT): INSERT INTO t2 SELECT * FROM t1;
-    # One cannot remove t1.id because t2 has the same number of columsn and does a select from t1
-    if grep -E --binary-files=text -qi "INSERT.*INTO.*SELECT.*FROM.*$TABLENAME" $WORKF; then
-      echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] Skipping column reduction for table '$TABLENAME' as it is present in a INSERT..SELECT..$TABLENAME. This will be/has been reduced elsewhere"
-      echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] Will now try and simplify the column names of this table ('$TABLENAME') to more uniform names"
-      COLUMN=1
-      COLS=$(cat $WORKF | awk "/CREATE.*TABLE.*$TABLENAME/,/;/" | sed 's/^ \+//' | grep -E --binary-files=text -vi "CREATE|ENGINE|^KEY|^PRIMARY|;" | sed 's/ .*$//' | grep -E --binary-files=text -v "\(|\)")
-      COUNTCOLS=$(printf "%b\n" "$COLS" | wc -l)
-      for COL in $COLS; do
-        if [ "$COL" != "c$C_COL_COUNTER" ]; then
-          # Try and rename column now to cx to make testcase cleaner
-          if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Now attempting to rename column '$COL' to a more uniform 'c$C_COL_COUNTER'"; fi
-          sed -e "s/$COL/c$C_COL_COUNTER/g" $WORKF > $WORKT
-          C_COL_COUNTER=$[$C_COL_COUNTER+1]
-          run_and_check
-          if [ $? -eq 1 ]; then
-            # This column was removed, reducing column count
-            COUNTCOLS=$[$COUNTCOLS-1]
-          fi
-          COLUMN=$[$COLUMN+1]
-          LINECOUNTF=`cat $WORKF | wc -l | tr -d '[\t\n ]*'`
-          SIZEF=`stat -c %s $WORKF`
-        else
-          if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Not renaming column '$COL' as it's name is already optimal"; fi
-        fi
-      done
-    else
-      NUMOFINVOLVEDTABLES=1
-
-      # Check if there are INSERT..INTO..$TABLENAME..SELECT..$TABLENAME2 lines. If so, fetch $TABLENAME2 etc.
-      TEMPTABLENAME=$TABLENAME
-      while grep -E --binary-files=text -qi "INSERT.*INTO.*$TEMPTABLENAME.*SELECT" $WORKF; do
-        NUMOFINVOLVEDTABLES=$[$NUMOFINVOLVEDTABLES+1]
-        # the '...\n/2' sed is a precaution against multiple INSERT INTOs on one line (it replaces the second occurence)
-        export TABLENAME$NUMOFINVOLVEDTABLES=$(grep -E --binary-files=text "INSERT.*INTO.*$TEMPTABLENAME.*SELECT" $WORKF | tail -n1 | sed -e 's/INSERT.*INTO/\n/2' \
-          | head -n1 | sed -e "s/INSERT.*INTO.*$TEMPTABLENAME.*SELECT.*FROM[\t ]*\(.*\)/\1/" -e 's/ //g;s/;//g')
-        TEMPTABLENAME=$(eval echo $(echo '$TABLENAME'"$NUMOFINVOLVEDTABLES"))
-      done
-
-      COLUMN=1
-      COLS=$(cat $WORKF | awk "/CREATE.*TABLE.*$TABLENAME/,/;/" | sed 's/^ \+//' | grep -E --binary-files=text -vi "CREATE|ENGINE|^KEY|^PRIMARY|;" | sed 's/ .*$//' | grep -E --binary-files=text -v "\(|\)")
-      COUNTCOLS=$(printf "%b\n" "$COLS" | wc -l)
-      # The inner loop below is called for each table (= each trial) and processes all columns for the table in question
-      # So the hierarchy is: reducer > STAGE6 > TRIAL x (various tables) > Column y of table x
-      for COL in $COLS; do
-        echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Trying to eliminate column '$COL' in table '$TABLENAME'"
-
-        # Eliminate the column from the correct CREATE TABLE table (this will match the first occurence of that column name in the correct CREATE TABLE)
-        # This sed presumes that each column is on one line, by itself, terminated by a comma (can be improved upon as per the above remark note)
-        WORKT2=`echo $WORKT | sed 's/$/.2/'`
-        sed -e "/CREATE.*TABLE.*$TABLENAME/,/^[ ]*$COL.*,/s/^[ ]*$COL.*,//1" $WORKF | grep -E --binary-files=text -v "^$" > $WORKT2  # Remove the column from table defintion
-        # Write the testcase with removed column table definition to WORKT as well in case there are no INSERT removals
-        # (and hence $WORKT will not be replaced with $WORKT2 anymore below, so reducer does it here as a harmless, but potentially needed, precaution)
-        cp -f $WORKT2 $WORKT
-
-        # If present, the script also need to drop the same column from the INSERT for that table, otherwise the testcase will definitely fail (incorrect INSERT)
-        # Small limitation 1: ,',', (a comma inside a txt string) is not handled correctly. Column elimination will work, but only upto this occurence (per table)
-        # Small limitation 2: INSERT..INTO..SELECT <specific columns> does not work. SELECT * in such cases is handled. You could manually edit the testcase.
-
-        for c in $(eval echo {1..$NUMOFINVOLVEDTABLES}); do
-          if   [ $c -eq 1 ]; then
-            # We are now processing any INSERT..INTO..$TABLENAME..VALUES reductions
-            # Noth much is required here. In effect, this is what happens here:
-            # CREATE TABLE t1 (id INT);
-            # INSERT INTO t1 VALUES (1);
-            # reducer will try and eliminate "(1)" (after "id" was removed from the table defintion above already)
-            # Note that this will also run (due to the for loop) for a NUMOFINVOLVEDTABLES=2+ run - i.e. if an INSERT..INTO..$TABLENAME..SELECT is detected,
-            # This run ensures that (see t1/t2 example below) that any additional INSERT INTO t2 VALUES (2) (besides the INSERT SELECT) are covered
-            TABLENAME_OLD=$TABLENAME
-          elif [ $c -ge 2 ]; then
-            # We are now processing any eliminations from other tables to ensure that INSERT..INTO..$TABLENAME..SELECT works for this table
-            # We do this by setting TABLENAME to $TABLENAME2 etc. In effect, this is what happens:
-            # CREATE TABLE t1 (id INT);
-            # INSERT INTO t1 VALUES (1);
-            # CREATE TABLE t2 (id2 INT):
-            # INSERT INTO t2 SELECT * FROM t1;
-            # reducer will try and eliminate "(1)" from table t1 (after "id2" was removed from the table defintion above already)
-            # An extra part (see * few lines lower) will ensure that "id" is also removed from t1
-            TABLENAME=$(eval echo $(echo '$TABLENAME'"$c"))   # Replace TABLENAME with TABLENAMEx thereby eliminating all "chained" columns
-            echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] INSERT..SELECT into this table from another one detected: removing corresponding column $COLUMN in table '$TABLENAME'"
-            WORKT3=`echo $WORKT | sed 's/$/.3/'`
-            COL_LINE=$[$(cat $WORKT2 | grep -E --binary-files=text -m1 -n "CREATE.*TABLE.*$TABLENAME" | awk -F":" '{print $1}') + $COLUMN]
-            cat $WORKT2 | sed -e "${COL_LINE}d" > $WORKT3  # (*) Remove the column from the connected table defintion
-            cp -f $WORKT3 $WORKT2
-            rm $WORKT3
-          else
-            echo "ASSERT: NUMOFINVOLVEDTABLES!=1||2: $NUMOFINVOLVEDTABLES!=1||2";
-            echo "Terminating now."
-            exit 1
-          fi
-
-          # First count how many actual INSERT rows there are
-          COUNTINSERTS=0
-          COUNTINSERTS=$(for INSERT in $(cat $WORKT2 | awk "/INSERT.*INTO.*$TABLENAME.*VALUES/,/;/" | \
-            sed "s/;/,/;s/^[ ]*(/(\n/;s/)[ ,;]$/\n)/;s/)[ ]*,[ ]*(/\n/g" | \
-            grep -E --binary-files=text -v "^[ ]*[\(\)][ ]*$|INSERT"); do \
-            echo $INSERT; \
-            done | wc -l)
-
-          if [ $COUNTINSERTS -gt 0 ]; then
-            # Loop through each line within a single INSERT (ex: INSERT INTO t1 VALUES ('a',1),('b',2);), and through multiple INSERTs (ex: INSERT .. INSERT ..)
-            # And each time grab the "between ( and )" information and therein remove the n-th column ($COLUMN) value reducer is trying to remove. Then use a
-            # simple sed to replace the old "between ( and )" with the new "between ( and )" which contains one less column (the correct one which removed from
-            # the CREATE TABLE statement above also. Then re-test if the issue remains and swap files if this is the case, as usual.
-            if [ $c -ge 2 ]; then
-              echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Also removing $COUNTINSERTS INSERT..VALUES for column $COLUMN in table '$TABLENAME' to match column removal in said table"
-            else
-              echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Removing $COUNTINSERTS INSERT..VALUES for column '$COL' in table '$TABLENAME'"
-            fi
-            for i in $(eval echo {1..$COUNTINSERTS}); do
-              FROM=$(for INSERT in $(cat $WORKT2 | awk "/INSERT.*INTO.*$TABLENAME.*VALUES/,/;/" | \
-                sed "s/;/,/;s/^[ ]*(/(\n/;s/)[ ,;]$/\n)/;s/)[ ]*,[ ]*(/\n/g" | \
-                grep -E --binary-files=text -v "^[ ]*[\(\)][ ]*$|INSERT"); do \
-                echo $INSERT; \
-                done | awk "{if(NR==$i) print "'$1}')
-
-              TO_DONE=0
-              TO=$(for INSERT in $(cat $WORKT2 | awk "/INSERT.*INTO.*$TABLENAME.*VALUES/,/;/" | \
-                sed "s/;/,/;s/^[ ]*(/(\n/;s/)[ ,;]$/\n)/;s/)[ ]*,[ ]*(/\n/g" | \
-                grep -E --binary-files=text -v "^[ ]*[\(\)][ ]*$|INSERT"); do \
-                echo $INSERT | tr ',' '\n' | awk "{if(NR!=$COLUMN && $TO_DONE==0) print "'$1}'; echo "==>=="; \
-                done | tr '\n' ',' | sed 's/,==>==/\n/g' | sed 's/^,//' | awk "{if(NR==$i) print "'$1}')
-              TO_DONE=1
-
-              # Fix backslash issues (replace \ with \\) like 'you\'ve' - i.e. a single quote within single quoted INSERT values
-              # This insures the regex matches in the sed below against the original file: you\'ve > you\\'ve (here) > you\'ve (in the sed)
-              FROM=$(echo $FROM | sed 's|\\|\\\\|g')
-              TO=$(echo $TO | sed 's|\\|\\\\|g')
-
-              # The actual replacement
-              cat $WORKT2 | sed "s/$FROM/$TO/" > $WORKT
-              cp -f $WORKT $WORKT2
-
-              #DEBUG
-              #echo_out "i: |$i|";echo_out "from: |$FROM|";echo_out "_to_: |$TO|";
-            done
-          fi
-          # DEBUG
-          #echo_out "c: |$c|";echo_out "COUNTINSERTS: |$COUNTINSERTS|";echo_out "COLUMN: |$COLUMN|";echo_out "diff: $(diff $WORKF $WORKT2)"
-          #read -p "pause"
-
-        done
-        rm $WORKT2
-        TABLENAME=$TABLENAME_OLD
-
-        if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Remaining size of input file: $SIZEF bytes ($LINECOUNTF lines)"; fi
-        run_and_check
-        if [ $? -eq 0 ]; then
+      # Check if this table ($TABLENAME) is references in aother INSERT..INTO..$TABLENAME2..SELECT..$TABLENAME line.
+      # If so, reducer does not need to process this table since it will be processed later when reducer gets to the table $TABLENAME2
+      # This is basically an optimization to avoid x (number of colums) unnecessary restarts which will definitely fail:
+      # Example: CREATE TABLE t1 (id INT); INSERT INTO t1 VALUES (1); CREATE TABLE t2 (id2 INT): INSERT INTO t2 SELECT * FROM t1;
+      # One cannot remove t1.id because t2 has the same number of columsn and does a select from t1
+      if grep -E --binary-files=text -qi "INSERT.*INTO.*SELECT.*FROM.*$TABLENAME" $WORKF; then
+        echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] Skipping column reduction for table '$TABLENAME' as it is present in a INSERT..SELECT..$TABLENAME. This will be/has been reduced elsewhere"
+        echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] Will now try and simplify the column names of this table ('$TABLENAME') to more uniform names"
+        COLUMN=1
+        COLS=$(cat $WORKF | awk "/CREATE.*TABLE.*$TABLENAME/,/;/" | sed 's/^ \+//' | grep -E --binary-files=text -vi "CREATE|ENGINE|^KEY|^PRIMARY|;" | sed 's/ .*$//' | grep -E --binary-files=text -v "\(|\)")
+        COUNTCOLS=$(printf "%b\n" "$COLS" | wc -l)
+        for COL in $COLS; do
           if [ "$COL" != "c$C_COL_COUNTER" ]; then
-            LINECOUNTF=`cat $WORKF | wc -l | tr -d '[\t\n ]*'`
-            SIZEF=`stat -c %s $WORKF`
-
-            # This column was not removed. Try and rename column now to cx to make testcase cleaner
-            if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Now attempting to rename this column ('$COL') to a more uniform 'c$C_COL_COUNTER'"; fi
+            # Try and rename column now to cx to make testcase cleaner
+            if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Now attempting to rename column '$COL' to a more uniform 'c$C_COL_COUNTER'"; fi
             sed -e "s/$COL/c$C_COL_COUNTER/g" $WORKF > $WORKT
             C_COL_COUNTER=$[$C_COL_COUNTER+1]
             run_and_check
+            if [ $? -eq 1 ]; then
+              # This column was removed, reducing column count
+              COUNTCOLS=$[$COUNTCOLS-1]
+            fi
+            COLUMN=$[$COLUMN+1]
+            LINECOUNTF=`cat $WORKF | wc -l | tr -d '[\t\n ]*'`
+            SIZEF=`stat -c %s $WORKF`
           else
             if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Not renaming column '$COL' as it's name is already optimal"; fi
           fi
+        done
+      else
+        NUMOFINVOLVEDTABLES=1
 
-          # Only advance the column number if there was no issue showing, otherwise stay on the same column (If the issue does show,
-          # the script will remove the current column and shift all other columns down by one, hence it has to stay in the same
-          # place as this will contain the next column)
-          COLUMN=$[$COLUMN+1]
-        else
-          # This column was removed, reducing column count
-          COUNTCOLS=$[$COUNTCOLS-1]
-        fi
-        LINECOUNTF=`cat $WORKF | wc -l | tr -d '[\t\n ]*'`
-        SIZEF=`stat -c %s $WORKF`
-      done
-    fi
-    TRIAL=$[$TRIAL+1]
-  done
+        # Check if there are INSERT..INTO..$TABLENAME..SELECT..$TABLENAME2 lines. If so, fetch $TABLENAME2 etc.
+        TEMPTABLENAME=$TABLENAME
+        while grep -E --binary-files=text -qi "INSERT.*INTO.*$TEMPTABLENAME.*SELECT" $WORKF; do
+          NUMOFINVOLVEDTABLES=$[$NUMOFINVOLVEDTABLES+1]
+          # the '...\n/2' sed is a precaution against multiple INSERT INTOs on one line (it replaces the second occurence)
+          export TABLENAME$NUMOFINVOLVEDTABLES=$(grep -E --binary-files=text "INSERT.*INTO.*$TEMPTABLENAME.*SELECT" $WORKF | tail -n1 | sed -e 's/INSERT.*INTO/\n/2' \
+            | head -n1 | sed -e "s/INSERT.*INTO.*$TEMPTABLENAME.*SELECT.*FROM[\t ]*\(.*\)/\1/" -e 's/ //g;s/;//g')
+          TEMPTABLENAME=$(eval echo $(echo '$TABLENAME'"$NUMOFINVOLVEDTABLES"))
+        done
+
+        COLUMN=1
+        COLS=$(cat $WORKF | awk "/CREATE.*TABLE.*$TABLENAME/,/;/" | sed 's/^ \+//' | grep -E --binary-files=text -vi "CREATE|ENGINE|^KEY|^PRIMARY|;" | sed 's/ .*$//' | grep -E --binary-files=text -v "\(|\)")
+        COUNTCOLS=$(printf "%b\n" "$COLS" | wc -l)
+        # The inner loop below is called for each table (= each trial) and processes all columns for the table in question
+        # So the hierarchy is: reducer > STAGE6 > TRIAL x (various tables) > Column y of table x
+        for COL in $COLS; do
+          echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Trying to eliminate column '$COL' in table '$TABLENAME'"
+
+          # Eliminate the column from the correct CREATE TABLE table (this will match the first occurence of that column name in the correct CREATE TABLE)
+          # This sed presumes that each column is on one line, by itself, terminated by a comma (can be improved upon as per the above remark note)
+          WORKT2=`echo $WORKT | sed 's/$/.2/'`
+          sed -e "/CREATE.*TABLE.*$TABLENAME/,/^[ ]*$COL.*,/s/^[ ]*$COL.*,//1" $WORKF | grep -E --binary-files=text -v "^$" > $WORKT2  # Remove the column from table defintion
+          # Write the testcase with removed column table definition to WORKT as well in case there are no INSERT removals
+          # (and hence $WORKT will not be replaced with $WORKT2 anymore below, so reducer does it here as a harmless, but potentially needed, precaution)
+          cp -f $WORKT2 $WORKT
+
+          # If present, the script also need to drop the same column from the INSERT for that table, otherwise the testcase will definitely fail (incorrect INSERT)
+          # Small limitation 1: ,',', (a comma inside a txt string) is not handled correctly. Column elimination will work, but only upto this occurence (per table)
+          # Small limitation 2: INSERT..INTO..SELECT <specific columns> does not work. SELECT * in such cases is handled. You could manually edit the testcase.
+
+          for c in $(eval echo {1..$NUMOFINVOLVEDTABLES}); do
+            if   [ $c -eq 1 ]; then
+              # We are now processing any INSERT..INTO..$TABLENAME..VALUES reductions
+              # Noth much is required here. In effect, this is what happens here:
+              # CREATE TABLE t1 (id INT);
+              # INSERT INTO t1 VALUES (1);
+              # reducer will try and eliminate "(1)" (after "id" was removed from the table defintion above already)
+              # Note that this will also run (due to the for loop) for a NUMOFINVOLVEDTABLES=2+ run - i.e. if an INSERT..INTO..$TABLENAME..SELECT is detected,
+              # This run ensures that (see t1/t2 example below) that any additional INSERT INTO t2 VALUES (2) (besides the INSERT SELECT) are covered
+              TABLENAME_OLD=$TABLENAME
+            elif [ $c -ge 2 ]; then
+              # We are now processing any eliminations from other tables to ensure that INSERT..INTO..$TABLENAME..SELECT works for this table
+              # We do this by setting TABLENAME to $TABLENAME2 etc. In effect, this is what happens:
+              # CREATE TABLE t1 (id INT);
+              # INSERT INTO t1 VALUES (1);
+              # CREATE TABLE t2 (id2 INT):
+              # INSERT INTO t2 SELECT * FROM t1;
+              # reducer will try and eliminate "(1)" from table t1 (after "id2" was removed from the table defintion above already)
+              # An extra part (see * few lines lower) will ensure that "id" is also removed from t1
+              TABLENAME=$(eval echo $(echo '$TABLENAME'"$c"))   # Replace TABLENAME with TABLENAMEx thereby eliminating all "chained" columns
+              echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] INSERT..SELECT into this table from another one detected: removing corresponding column $COLUMN in table '$TABLENAME'"
+              WORKT3=`echo $WORKT | sed 's/$/.3/'`
+              COL_LINE=$[$(cat $WORKT2 | grep -E --binary-files=text -m1 -n "CREATE.*TABLE.*$TABLENAME" | awk -F":" '{print $1}') + $COLUMN]
+              cat $WORKT2 | sed -e "${COL_LINE}d" > $WORKT3  # (*) Remove the column from the connected table defintion
+              cp -f $WORKT3 $WORKT2
+              rm $WORKT3
+            else
+              echo "ASSERT: NUMOFINVOLVEDTABLES!=1||2: $NUMOFINVOLVEDTABLES!=1||2";
+              echo "Terminating now."
+              exit 1
+            fi
+  
+            # First count how many actual INSERT rows there are
+            COUNTINSERTS=0
+            COUNTINSERTS=$(for INSERT in $(cat $WORKT2 | awk "/INSERT.*INTO.*$TABLENAME.*VALUES/,/;/" | \
+              sed "s/;/,/;s/^[ ]*(/(\n/;s/)[ ,;]$/\n)/;s/)[ ]*,[ ]*(/\n/g" | \
+              grep -E --binary-files=text -v "^[ ]*[\(\)][ ]*$|INSERT"); do \
+              echo $INSERT; \
+              done | wc -l)
+
+            if [ $COUNTINSERTS -gt 0 ]; then
+              # Loop through each line within a single INSERT (ex: INSERT INTO t1 VALUES ('a',1),('b',2);), and through multiple INSERTs (ex: INSERT .. INSERT ..)
+              # And each time grab the "between ( and )" information and therein remove the n-th column ($COLUMN) value reducer is trying to remove. Then use a
+              # simple sed to replace the old "between ( and )" with the new "between ( and )" which contains one less column (the correct one which removed from
+              # the CREATE TABLE statement above also. Then re-test if the issue remains and swap files if this is the case, as usual.
+              if [ $c -ge 2 ]; then
+                echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Also removing $COUNTINSERTS INSERT..VALUES for column $COLUMN in table '$TABLENAME' to match column removal in said table"
+              else
+                echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Removing $COUNTINSERTS INSERT..VALUES for column '$COL' in table '$TABLENAME'"
+              fi
+              for i in $(eval echo {1..$COUNTINSERTS}); do
+                FROM=$(for INSERT in $(cat $WORKT2 | awk "/INSERT.*INTO.*$TABLENAME.*VALUES/,/;/" | \
+                  sed "s/;/,/;s/^[ ]*(/(\n/;s/)[ ,;]$/\n)/;s/)[ ]*,[ ]*(/\n/g" | \
+                  grep -E --binary-files=text -v "^[ ]*[\(\)][ ]*$|INSERT"); do \
+                  echo $INSERT; \
+                  done | awk "{if(NR==$i) print "'$1}')
+
+                TO_DONE=0
+                TO=$(for INSERT in $(cat $WORKT2 | awk "/INSERT.*INTO.*$TABLENAME.*VALUES/,/;/" | \
+                  sed "s/;/,/;s/^[ ]*(/(\n/;s/)[ ,;]$/\n)/;s/)[ ]*,[ ]*(/\n/g" | \
+                  grep -E --binary-files=text -v "^[ ]*[\(\)][ ]*$|INSERT"); do \
+                  echo $INSERT | tr ',' '\n' | awk "{if(NR!=$COLUMN && $TO_DONE==0) print "'$1}'; echo "==>=="; \
+                  done | tr '\n' ',' | sed 's/,==>==/\n/g' | sed 's/^,//' | awk "{if(NR==$i) print "'$1}')
+                TO_DONE=1
+
+                # Fix backslash issues (replace \ with \\) like 'you\'ve' - i.e. a single quote within single quoted INSERT values
+                # This insures the regex matches in the sed below against the original file: you\'ve > you\\'ve (here) > you\'ve (in the sed)
+                FROM=$(echo $FROM | sed 's|\\|\\\\|g')
+                TO=$(echo $TO | sed 's|\\|\\\\|g')
+
+                # The actual replacement
+                cat $WORKT2 | sed "s/$FROM/$TO/" > $WORKT
+                cp -f $WORKT $WORKT2
+
+                #DEBUG
+                #echo_out "i: |$i|";echo_out "from: |$FROM|";echo_out "_to_: |$TO|";
+              done
+            fi
+            # DEBUG
+            #echo_out "c: |$c|";echo_out "COUNTINSERTS: |$COUNTINSERTS|";echo_out "COLUMN: |$COLUMN|";echo_out "diff: $(diff $WORKF $WORKT2)"
+            #read -p "pause"
+
+          done
+          rm $WORKT2
+          TABLENAME=$TABLENAME_OLD
+
+          if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Remaining size of input file: $SIZEF bytes ($LINECOUNTF lines)"; fi
+          run_and_check
+          if [ $? -eq 0 ]; then
+            if [ "$COL" != "c$C_COL_COUNTER" ]; then
+              LINECOUNTF=`cat $WORKF | wc -l | tr -d '[\t\n ]*'`
+              SIZEF=`stat -c %s $WORKF`
+
+              # This column was not removed. Try and rename column now to cx to make testcase cleaner
+              if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Now attempting to rename this column ('$COL') to a more uniform 'c$C_COL_COUNTER'"; fi
+              sed -e "s/$COL/c$C_COL_COUNTER/g" $WORKF > $WORKT
+              C_COL_COUNTER=$[$C_COL_COUNTER+1]
+              run_and_check
+            else
+              if [ -f $WORKD/mysql.out ]; then echo_out "$ATLEASTONCE [Stage $STAGE] [Trial $TRIAL] [Column $COLUMN/$COUNTCOLS] Not renaming column '$COL' as it's name is already optimal"; fi
+            fi
+
+            # Only advance the column number if there was no issue showing, otherwise stay on the same column (If the issue does show,
+            # the script will remove the current column and shift all other columns down by one, hence it has to stay in the same
+            # place as this will contain the next column)
+            COLUMN=$[$COLUMN+1]
+          else
+            # This column was removed, reducing column count
+            COUNTCOLS=$[$COUNTCOLS-1]
+          fi
+          LINECOUNTF=`cat $WORKF | wc -l | tr -d '[\t\n ]*'`
+          SIZEF=`stat -c %s $WORKF`
+        done
+      fi
+      TRIAL=$[$TRIAL+1]
+    done
+  fi
 fi
 
 #STAGE7: Execute various final testcase cleanup sed's. Perform a check if the issue is still present for each replacement (set)
@@ -4220,13 +4222,22 @@ if [ $SKIPSTAGEBELOW -lt 7 -a $SKIPSTAGEABOVE -gt 7 ]; then
     elif [ $TRIAL -eq 154 ]; then sed "s/''/0/g" $WORKF > $WORKT
     elif [ $TRIAL -eq 155 ]; then sed "/INSERT/,/;/s/''/0/g" $WORKF > $WORKT
     elif [ $TRIAL -eq 156 ]; then sed "/SELECT/,/;/s/''/0/g" $WORKF > $WORKT
-    elif [ $TRIAL -eq 157 ]; then sed "s/;[ \t]*#.*/;/" $WORKF > $WORKT  # Attempt to remove #EOL comments
-    elif [ $TRIAL -eq 158 ]; then sed "s/#[^#]\+$/;/" $WORKF > $WORKT  # Another attempt at removing #EOL comments
-    elif [ $TRIAL -eq 159 ]; then grep -E --binary-files=text -v "^#|^$" $WORKF > $WORKT
-    elif [ $TRIAL -eq 160 ]; then sed -e 's/0D0R0O0P0D0A0T0A0B0A0S0E0t0r0a0n0s0f0o0r0m0s0/NO_SQL_REQUIRED/' $WORKF > $WORKT
-    elif [ $TRIAL -eq 161 ]; then sed -e 's/[\t ]\+/ /g' $WORKF > $WORKT
-    elif [ $TRIAL -eq 162 ]; then sed -e 's/;[\t ]*;/;/g' $WORKF > $WORKT  # Remove empty statements if possible
-    elif [ $TRIAL -eq 163 ]; then NEXTACTION="& Finalize run"; sed 's/`//g' $WORKF > $WORKT
+    elif [ $TRIAL -eq 157 ]; then sed "s/;[ \t]\+#/;#/" $WORKF > $WORKT  # Remove any spaces/tabs before #EOL comments if present
+    elif [ $TRIAL -eq 158 ]; then sed "s/;[ \t]*#.*/;/" $WORKF > $WORKT  # Attempt to remove #EOL comments
+    elif [ $TRIAL -eq 159 ]; then sed "s/#[^#]\+$/;/" $WORKF > $WORKT  # Another attempt at removing #EOL comments
+    elif [ $TRIAL -eq 160 ]; then sed "s/#[^#]\+$/#/" $WORKF > $WORKT  # If previous attempts do not work, attempt shorter comments
+    elif [ $TRIAL -eq 161 ]; then sed -e 's/[ \t]\+$//' $WORKF > $WORKT  # Remove spaces at end of line
+    elif [ $TRIAL -eq 162 ]; then NOSKIP=1; sed -e 's|\([^;]\)$|\1;|' $WORKF > $WORKT  # Add ';' on lines that do not have it
+    elif [ $TRIAL -eq 163 ]; then NOSKIP=1; sed -e 's|#;|;#|' $WORKF > $WORKT  # Ref line above/below for combination effect
+    elif [ $TRIAL -eq 164 ]; then sed -e 's/;[ \t]*;/;/g' $WORKF > $WORKT  # Remove empty statements if possible
+    elif [ $TRIAL -eq 165 ]; then sed -e 's/[ \t]\+/ /g' $WORKF > $WORKT
+    elif [ $TRIAL -eq 166 ]; then sed -e 's/  / /' $WORKF > $WORKT
+    elif [ $TRIAL -eq 167 ]; then sed -e 's/  / /' $WORKF > $WORKT
+    elif [ $TRIAL -eq 168 ]; then sed -e 's/  / /' $WORKF > $WORKT
+    elif [ $TRIAL -eq 169 ]; then grep -E --binary-files=text -v "^#" $WORKF > $WORKT
+    elif [ $TRIAL -eq 170 ]; then grep -E --binary-files=text -v "^$" $WORKF > $WORKT
+    elif [ $TRIAL -eq 171 ]; then sed -e 's/0D0R0O0P0D0A0T0A0B0A0S0E0t0r0a0n0s0f0o0r0m0s0/NO_SQL_REQUIRED/' $WORKF > $WORKT
+    elif [ $TRIAL -eq 172 ]; then NEXTACTION="& Finalize run"; sed 's/`//g' $WORKF > $WORKT
     else break
     fi
     SIZET=`stat -c %s $WORKT`

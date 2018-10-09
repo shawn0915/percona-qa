@@ -70,6 +70,14 @@ function run_ps_specific_tests() {
   fi
 }
 
+function run_postgresql_specific_tests() {
+  if [[ $tap == 1 ]] ; then
+    bats --tap ${DIRNAME}/pgsql-specific-tests.bats
+  else
+    bats ${DIRNAME}/pgsql-specific-tests.bats
+  fi
+}
+
 function run_pxc_specific_tests() {
   if [[ $tap == 1 ]] ; then
     bats --tap ${DIRNAME}/pxc-specific-tests.bats
@@ -99,6 +107,14 @@ function run_external_exporters_tests() {
     bats --tap ${DIRNAME}/external_exporters_tests.bats
   else
     bats ${DIRNAME}/external_exporters_tests.bats
+  fi
+}
+
+function run_pmm_summary() {
+  if [[ $tap == 1 ]] ; then
+    bats --tap ${DIRNAME}/pmm-summary.bats
+  else
+    bats ${DIRNAME}/pmm-summary.bats
   fi
 }
 
@@ -228,12 +244,19 @@ if [[ $instance_t == "ps" ]]; then
   run_ps_specific_tests
 fi
 
+if [[ $instance_t == "pgsql" ]]; then
+  echo "Running Postgre SQL specific tests"
+  run_postgresql_specific_tests
+fi
+
 
 if [[ $instance_t == "pxc" ]]; then
   echo "Running PXC specific tests"
   run_pxc_specific_tests
 fi
 
+echo "Validate Summary Checks"
+run_pmm_summary
 
 # ProxySQL
 # @test "Running ProxySQL tests" {

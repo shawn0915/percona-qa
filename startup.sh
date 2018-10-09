@@ -63,12 +63,13 @@ elif [ "${VERSION_INFO}" != "5.7" -a "${VERSION_INFO}" != "8.0" ]; then
 fi
 
 # Setup scritps
+rm -f start start_group_replication start_valgrind start_gypsy repl_setup stop setup cl test init wipe all all_no_cl sysbench_prepare sysbench_run sysbench_measure myrocks_tokudb_init pmm_os_agent pmm_mysql_agent stop_group_replication *cl gdb wipe_group_replication
+BASIC_SCRIPTS="start | start_valgrind | start_gypsy | repl_setup | stop | kill | setup | cl | test | init | wipe | all | all_stbe | all_no_cl | sysbench_prepare | sysbench_run | sysbench_measure | gdb | myrocks_tokudb_init"
+GRP_RPL_SCRIPTS="start_group_replication (and stop_group_replication is created dynamically on group replication startup)"
 if [[ $GRP_RPL -eq 1 ]];then
-  echo "Adding scripts: start | start_group_replication | start_valgrind | start_gypsy | repl_setup | stop | kill | setup | cl | test | init | wipe | all | prepare | run | measure | gdb | myrocks_tokudb_init"
-  rm -f start start_group_replication start_valgrind start_gypsy repl_setup stop setup cl test init wipe all all_no_cl prepare run measure myrocks_tokudb_init pmm_os_agent pmm_mysql_agent stop_group_replication *cl gdb wipe_group_replication
+  echo "Adding scripts: ${BASIC_SCRIPTS} | ${GRP_RPL_SCRIPTS}"
 else
-  echo "Adding scripts: start | start_valgrind | start_gypsy | repl_setup | stop | kill | setup | cl | test | init | wipe | all | prepare | run | measure | gdb | myrocks_tokudb_init"
-  rm -f start start_valgrind start_gypsy repl_setup stop setup cl test init wipe all all_no_cl prepare run measure myrocks_tokudb_init gdb pmm_os_agent pmm_mysql_agent
+  echo "Adding scripts: ${BASIC_SCRIPTS}"
 fi
 
 #GR startup scripts
@@ -232,7 +233,8 @@ echo 'MYEXTRA=" --no-defaults --gtid_mode=ON --enforce_gtid_consistency=ON --log
 echo "RPORT=$[$RANDOM % 10000 + 10000]" >> repl_setup
 echo "echo \"\" > stop_repl" >> repl_setup
 echo "if ${PWD}/bin/mysqladmin -uroot -S$PWD/socket.sock ping > /dev/null 2>&1; then" >> repl_setup
-echo "  ${PWD}/bin/mysql -A -uroot -S${PWD}/socket.sock  -Bse\"grant all on *.* to repl@'%' identified by 'repl';flush privileges;\"" >> repl_setup
+echo "  ${PWD}/bin/mysql -A -uroot -S${PWD}/socket.sock  -Bse\"create user repl@'%' identified by 'repl';\"" >> repl_setup
+echo "  ${PWD}/bin/mysql -A -uroot -S${PWD}/socket.sock  -Bse\"grant all on *.* to repl@'%'; flush privileges;\"" >> repl_setup
 echo "  MASTER_PORT=\$(\${PWD}/bin/mysql -A -uroot -S\${PWD}/socket.sock  -Bse\"select @@port\")" >> repl_setup
 echo "else" >> repl_setup
 echo "  echo \"ERROR! Master server is not started. Make sure to start master with GTID enabled. Terminating!\"" >> repl_setup
@@ -256,7 +258,8 @@ echo "  $BIN  \${MYEXTRA} ${START_OPT} --basedir=${PWD} --tmpdir=\${node} --data
 echo "  for X in \$(seq 0 120); do if ${PWD}/bin/mysqladmin ping -uroot -S\$node/socket.sock > /dev/null 2>&1; then break; fi; sleep 0.25; done" >> repl_setup
 echo "  if [[ \"\$REPL_TYPE\" = \"MSR\" ]]; then" >> repl_setup
 echo "    if [ \$i -eq 1 ]; then" >> repl_setup
-echo "      ${PWD}/bin/mysql -A -uroot --socket=\$node/socket.sock  -Bse\"grant all on *.* to repl@'%' identified by 'repl';flush privileges;\"" >> repl_setup
+echo "      ${PWD}/bin/mysql -A -uroot --socket=\$node/socket.sock  -Bse\"create user repl@'%' identified by 'repl';\"" >> repl_setup
+echo "      ${PWD}/bin/mysql -A -uroot --socket=\$node/socket.sock  -Bse\"grant all on *.* to repl@'%';flush privileges;\"" >> repl_setup
 echo "      echo -e \"${PWD}/bin/mysql -A -uroot -S\$node/socket.sock --prompt \\\"masternode2> \\\"\" > ${PWD}/masternode2_cl " >> repl_setup
 echo "    else" >> repl_setup
 echo "      echo -e \"${PWD}/bin/mysql -A -uroot -S\$node/socket.sock --prompt \\\"slavenode> \\\"\" > ${PWD}/\slavenode_cl " >> repl_setup
@@ -269,13 +272,22 @@ echo "  echo \"${PWD}/bin/mysqladmin -uroot -S\$node/socket.sock shutdown\" >> s
 echo "  echo \"echo 'Server on socket \$node/socket.sock with datadir \$node halted'\" >> stop_repl" >> repl_setup
 echo "  if [[ \"\$REPL_TYPE\" = \"MSR\" ]]; then" >> repl_setup
 echo "    if [ \$i -eq 2 ]; then" >> repl_setup
-echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1 FOR CHANNEL 'master1';\"" >> repl_setup
 echo "      MASTER_PORT2=\$(${PWD}/bin/mysql -A -uroot -S${PWD}/masternode2/socket.sock  -Bse\"SELECT @@port\")" >> repl_setup
-echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT2, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1 FOR CHANNEL 'master2';\"" >> repl_setup
+if [ "${VERSION_INFO}" == "8.0" ]; then
+  echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1,GET_MASTER_PUBLIC_KEY=1 FOR CHANNEL 'master1';\"" >> repl_setup
+  echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT2, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1,GET_MASTER_PUBLIC_KEY=1 FOR CHANNEL 'master2';\"" >> repl_setup
+else
+  echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1 FOR CHANNEL 'master1';\"" >> repl_setup
+  echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT2, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1 FOR CHANNEL 'master2';\"" >> repl_setup
+fi
 echo "      ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"START SLAVE;\"" >> repl_setup
 echo "    fi" >> repl_setup
 echo "  else" >> repl_setup
-echo "    ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1;START SLAVE;\"" >> repl_setup
+if [ "${VERSION_INFO}" == "8.0" ]; then
+  echo "    ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1,GET_MASTER_PUBLIC_KEY=1;START SLAVE;\"" >> repl_setup
+else
+  echo "    ${PWD}/bin/mysql -A -uroot -S\$node/socket.sock  -Bse\"CHANGE MASTER TO MASTER_HOST='127.0.0.1',MASTER_PORT=\$MASTER_PORT, MASTER_USER='repl',MASTER_PASSWORD='repl',MASTER_AUTO_POSITION=1;START SLAVE;\"" >> repl_setup
+fi
 echo "  fi" >> repl_setup
 echo "done" >> repl_setup
 echo "if [[ \"\$REPL_TYPE\" = \"MSR\" ]]; then" >> repl_setup
@@ -322,9 +334,16 @@ echo $JE1 >> wipe; echo $JE2 >> wipe; echo $JE3 >> wipe; echo $JE4 >> wipe; echo
 echo "$INIT_TOOL --no-defaults ${INIT_OPT} \${MYEXTRA_OPT} --basedir=${PWD} --datadir=${PWD}/data" >> wipe
 echo "if [ -r log/master.err.PREV ]; then rm -f log/master.err.PREV; fi" >> wipe
 echo "if [ -r log/master.err ]; then mv log/master.err log/master.err.PREV; fi" >> wipe
-echo "sysbench --test=/usr/share/doc/sysbench/tests/db/parallel_prepare.lua --oltp-auto-inc=off --mysql-engine-trx=yes --mysql-table-engine=innodb --oltp_table_size=1000000 --oltp_tables_count=1 --mysql-db=test --mysql-user=root --db-driver=mysql --mysql-socket=${PWD}/socket.sock prepare" > prepare
-echo "sysbench --report-interval=10 --oltp-auto-inc=off --max-time=50 --max-requests=0 --mysql-engine-trx=yes --test=/usr/share/doc/sysbench/tests/db/oltp.lua --init-rng=on --oltp_index_updates=10 --oltp_non_index_updates=10 --oltp_distinct_ranges=15 --oltp_order_ranges=15 --oltp_tables_count=1 --num-threads=4 --oltp_table_size=1000000 --mysql-db=test --mysql-user=root --db-driver=mysql --mysql-socket=${PWD}/socket.sock run" > run
-echo "./stop;./wipe;./start;./prepare;./run;./stop" > measure
+
+if [ "$(sysbench --version | cut -d ' ' -f2 | grep -oe '[0-9]\.[0-9]')" == "0.5" ]; then
+  echo "sysbench --test=/usr/share/doc/sysbench/tests/db/parallel_prepare.lua --mysql-engine-trx=yes --mysql-table-engine=innodb --oltp_table_size=1000000 --oltp_tables_count=1 --mysql-db=test --mysql-user=root --db-driver=mysql --mysql-socket=${PWD}/socket.sock prepare" > sysbench_prepare
+  echo "sysbench --report-interval=10 --max-time=50 --max-requests=0 --mysql-engine-trx=yes --test=/usr/share/doc/sysbench/tests/db/oltp.lua --init-rng=on --oltp_index_updates=10 --oltp_non_index_updates=10 --oltp_distinct_ranges=15 --oltp_order_ranges=15 --oltp_tables_count=1 --num-threads=4 --oltp_table_size=1000000 --mysql-db=test --mysql-user=root --db-driver=mysql --mysql-socket=${PWD}/socket.sock run" > sysbench_run
+elif [ "$(sysbench --version | cut -d ' ' -f2 | grep -oe '[0-9]\.[0-9]')" == "1.0" ]; then
+  echo "sysbench /usr/share/sysbench/oltp_insert.lua  --mysql-storage-engine=innodb --table-size=1000000 --tables=1 --mysql-db=test --mysql-user=root --db-driver=mysql --mysql-socket=${PWD}/socket.sock prepare" > sysbench_prepare
+  echo "sysbench /usr/share/sysbench/oltp_read_write.lua --report-interval=10 --time=50 --events=0 --index_updates=10 --non_index_updates=10 --distinct_ranges=15 --order_ranges=15 --tables=1 --threads=4  --table-size=1000000 --mysql-db=test --mysql-user=root --db-driver=mysql --mysql-socket=${PWD}/socket.sock run" > sysbench_run
+fi
+
+echo "./stop 2>/dev/null;./wipe;./start;./sysbench_prepare;./sysbench_run;./stop" > sysbench_measure
 if [ ! -z $LOAD_TOKUDB_INIT_FILE ]; then
   echo "./start \${MYEXTRA_OPT}; ${PWD}/bin/mysql -A -uroot -S${PWD}/socket.sock < ${LOAD_TOKUDB_INIT_FILE} ; ${PWD}/bin/mysql -uroot --socket=${PWD}/socket.sock  -e'CREATE DATABASE IF NOT EXISTS test' ;" >> wipe
   if [ ! -z $LOAD_ROCKSDB_INIT_FILE ] ; then
@@ -359,9 +378,11 @@ echo "rm -f log/master.*" >> init
 
 echo 'MYEXTRA_OPT="$*"' > all
 echo "./stop >/dev/null 2>&1;rm -f socket.sock socket.sock.lock;./wipe \${MYEXTRA_OPT};./start \${MYEXTRA_OPT};./cl" >> all
+echo 'MYEXTRA_OPT="$*"' > all_stbe
+echo "./all --early-plugin-load=keyring_file.so --keyring_file_data=keyring --innodb_sys_tablespace_encrypt=ON \${MYEXTRA_OPT}" >> all_stbe  # './all_stbe' is './all' with system tablespace encryption
 echo 'MYEXTRA_OPT="$*"' > all_no_cl
 echo "./stop >/dev/null 2>&1;rm -f socket.sock socket.sock.lock;./wipe \${MYEXTRA_OPT};./start \${MYEXTRA_OPT}" >> all_no_cl
-chmod +x start start_valgrind start_gypsy stop setup cl cl_noprompt cl_noprompt_nobinary test kill init wipe all all_no_cl prepare run measure gdb myrocks_tokudb_init pmm_os_agent pmm_mysql_agent repl_setup 2>/dev/null
+chmod +x start start_valgrind start_gypsy stop setup cl cl_noprompt cl_noprompt_nobinary test kill init wipe all all_stbe all_no_cl sysbench_prepare sysbench_run sysbench_measure gdb myrocks_tokudb_init pmm_os_agent pmm_mysql_agent repl_setup 2>/dev/null
 echo "Setting up server with default directories"
 ./stop >/dev/null 2>&1
 ./init
@@ -370,4 +391,5 @@ if [[ -r ${PWD}/lib/mysql/plugin/ha_tokudb.so ]] || [[ -r ${PWD}/lib/mysql/plugi
   ./myrocks_tokudb_init
 fi
 echo "Done! To get a fresh instance at any time, execute: ./all (executes: stop;wipe;start;cl)"
+echo "      To get a fresh instance now, execute: ./start then wait 3 seconds and execute ./cl"
 exit 0
